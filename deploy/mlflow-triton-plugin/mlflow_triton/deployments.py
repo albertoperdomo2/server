@@ -26,6 +26,7 @@
 import os
 import shutil
 import logging
+import datetime
 from pathlib import Path
 
 from mlflow_triton.config import Config
@@ -45,6 +46,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 _MLFLOW_META_FILENAME = "mlflow-meta.json"
+_DEPLOYMENT_LOG_FILE = "deployment.log"
 
 
 class TritonPlugin(BaseDeploymentClient):
@@ -104,6 +106,7 @@ class TritonPlugin(BaseDeploymentClient):
         path = Path(_download_artifact_from_uri(model_uri))
         self._copy_files_to_triton_repo(path, name, flavor)
         self._generate_mlflow_meta_file(name, flavor, model_uri)
+        self._generate_deploy_log_file(name, flavor, model_uri)
 
         try:
             self.triton_client.load_model(name)
@@ -255,6 +258,39 @@ class TritonPlugin(BaseDeploymentClient):
             return {"outputs": res}
         except InferenceServerException as ex:
             raise MlflowException(str(ex))
+
+    def _generate_deployment_log_file(self, name, flavor, model_uri):
+        """General deployment log file. It helps to keep track of 
+        which model was deployed and when it was deployed.
+        """
+        log = (f'DEPLOYED [{datetime.datetime.now().isoformat()}] '
+               f'Model (flavor: {flavor}) {name} with '
+               f'Mlflow URI: {model_uri}\n')
+
+        if 's3' in self.server_config:
+            try:
+                _deployment_log = self.server_config['s3'].get_object(
+                        Bucket=self.server_config['s3_bucket'],
+                        Key=f'{_DEPLOYMENT_LOG_FILE}',
+                        )['Body'].read()
+            except Exception as e:
+                _deployment_log = b''
+
+            _deployment_log += bytes(log, 'UTF-8')
+
+            self.server_config['s3'].put_object(
+                Body=_deployment_log,
+                Bucket=self.server_config["s3_bucket"],
+                Key=f'{_DEPLOYMENT_LOG_FILE}',
+            )
+
+        else:
+            with open(os.path.join(self.triton_model_repo, _DEPLOYMENT_LOG_FILE),
+                      'a') as logfile:
+                logfile.write(log)
+
+        print(f'Saved {_DEPLOYMENT_LOG_FILE} to {self.triton_model_repo}')
+
 
     def _generate_mlflow_meta_file(self, name, flavor, model_uri):
         triton_deployment_dir = os.path.join(self.triton_model_repo, name)
