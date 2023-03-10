@@ -259,7 +259,7 @@ class TritonPlugin(BaseDeploymentClient):
         except InferenceServerException as ex:
             raise MlflowException(str(ex))
 
-    def _generate_deployment_log_file(self, name, flavor, model_uri):
+    def _generate_deploy_log_file(self, name, flavor, model_uri):
         """General deployment log file. It helps to keep track of 
         which model was deployed and when it was deployed.
         """
