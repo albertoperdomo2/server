@@ -193,14 +193,27 @@ existing shared-libraries to another location outside of the model
 repository, copy in the new shared libraries, and then reload the
 model.
 
+* If only the model instance configuration on the 'config.pbtxt' is modified
+(i.e. increasing/decreasing the instance count) for non-sequence models,
+then Triton will update the model rather then reloading it, when either a load
+request is received under
+[Model Control Mode EXPLICIT](#model-control-mode-explicit) or change to the
+'config.pbtxt' is detected under
+[Model Control Mode POLL](#model-control-mode-poll).
+
+* If a sequence model is updated with in-flight sequence(s), Triton does not
+guarentee any remaining request(s) from the in-flight sequence(s) will be routed
+to the same model instance for processing. It is currently the responsibility of
+the user to ensure any in-flight sequence(s) is complete before updating a
+sequence model.
+
 ## Concurrently Loading Models
 
 To reduce service downtime, Triton loads new models in the background while
 continuing to serve inferences on existing models. Based on use case and
 performance requirements, the optimal amount of resources dedicated to loading
 models may differ. Triton exposes a `--model-load-thread-count` option to
-configure the number of threads dedicated to loading models, which defaults to
-twice the number of CPU cores (`2*num_cpus`) visible to the server. 
+configure the number of threads dedicated to loading models, which defaults to 4.
 
 To set this parameter with the C API, refer to 
 `TRITONSERVER_ServerOptionsSetModelLoadThreadCount` in 

@@ -1,4 +1,4 @@
-# Copyright 2018-2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright 2018-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -71,6 +71,8 @@ if "plan" in _trials:
     _ragged_batch_supported_trials.append("plan")
 if "onnx" in _trials:
     _ragged_batch_supported_trials.append("onnx")
+if "libtorch" in _trials:
+    _ragged_batch_supported_trials.append("libtorch")
 
 _max_queue_delay_ms = 10000
 
@@ -203,8 +205,21 @@ class BatcherTest(tu.TestResultCollector):
 
     def check_status(self, model_name, batch_exec, request_cnt, infer_cnt,
                      exec_count):
-        stats = self.triton_client_.get_inference_statistics(model_name, "1")
-        self.assertEqual(len(stats.model_stats), 1, "expect 1 model stats")
+        # There is a time window between when responses are returned and statistics are updated.
+        # To prevent intermittent test failure during that window, wait up to 10 seconds for the
+        # inference statistics to be ready.
+        num_tries = 10
+        for i in range(num_tries):
+            stats = self.triton_client_.get_inference_statistics(
+                model_name, "1")
+            self.assertEqual(len(stats.model_stats), 1, "expect 1 model stats")
+            actual_exec_cnt = stats.model_stats[0].execution_count
+            if actual_exec_cnt == exec_count:
+                break
+            print("WARNING: expect {} executions, got {} (attempt {})".format(
+                exec_count, actual_exec_cnt, i))
+            time.sleep(1)
+
         self.assertEqual(stats.model_stats[0].name, model_name,
                          "expect model stats for model {}".format(model_name))
         self.assertEqual(

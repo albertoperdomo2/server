@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2018-2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright 2018-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -46,6 +46,14 @@ export CUDA_VISIBLE_DEVICES=0
 
 CLIENT_LOG="./client.log"
 BATCHER_TEST=sequence_batcher_test.py
+
+if [ -z "$TEST_SYSTEM_SHARED_MEMORY" ]; then
+    TEST_SYSTEM_SHARED_MEMORY="0"
+fi
+
+if [ -z "$TEST_CUDA_SHARED_MEMORY" ]; then
+    TEST_CUDA_SHARED_MEMORY="0"
+fi
 
 if [ -z "$TEST_VALGRIND" ]; then
     TEST_VALGRIND="0"
@@ -104,7 +112,7 @@ else
     fi
 fi
 
-SERVER_ARGS_EXTRA="--backend-directory=${BACKEND_DIR} --backend-config=tensorflow,version=${TF_VERSION}"
+SERVER_ARGS_EXTRA="--backend-directory=${BACKEND_DIR} --backend-config=tensorflow,version=${TF_VERSION} --log-verbose=1"
 
 source ../common/util.sh
 
@@ -165,7 +173,7 @@ export INITIAL_STATE_ZERO
 #   models1 - one instance with batch-size 4
 #   models2 - two instances with batch-size 2
 #   models4 - four instances with batch-size 1
-rm -fr *.log *.serverlog models{0,1,2,4} queue_delay_models && mkdir models{0,1,2,4} queue_delay_models
+rm -fr *.log  models{0,1,2,4} queue_delay_models && mkdir models{0,1,2,4} queue_delay_models
 
 # Get the datatype to use based on the backend
 function get_datatype () {
@@ -481,7 +489,7 @@ for model_trial in $MODEL_TRIALS; do
 
     for i in $NO_DELAY_TESTS; do
         SERVER_ARGS="--model-repository=$MODELDIR/$MODEL_PATH ${SERVER_ARGS_EXTRA}"
-        SERVER_LOG="./$i.$MODEL_PATH.serverlog"
+        SERVER_LOG="./$i.$MODEL_PATH.server.log"
 
         if [ "$TEST_VALGRIND" -eq 1 ]; then
             LEAKCHECK_LOG="./$i.$MODEL_PATH.valgrind.log"
@@ -541,7 +549,7 @@ for model_trial in $MODEL_TRIALS; do
             [[ "$i" != "test_half_batch" ]] && export TRITONSERVER_DELAY_SCHEDULER=4 &&
             [[ "$i" != "test_backlog_sequence_timeout" ]] && export TRITONSERVER_DELAY_SCHEDULER=12
         SERVER_ARGS="--model-repository=$MODELDIR/$MODEL_PATH ${SERVER_ARGS_EXTRA}"
-        SERVER_LOG="./$i.$MODEL_PATH.serverlog"
+        SERVER_LOG="./$i.$MODEL_PATH.server.log"
 
         if [ "$TEST_VALGRIND" -eq 1 ]; then
             LEAKCHECK_LOG="./$i.$MODEL_PATH.valgrind.log"
@@ -611,7 +619,7 @@ if [[ $BACKENDS == *"custom"* ]]; then
     export TRITONSERVER_DELAY_SCHEDULER=12
 
     SERVER_ARGS="--model-repository=$MODELDIR/$MODEL_PATH ${SERVER_ARGS_EXTRA}"
-    SERVER_LOG="./$i.$MODEL_PATH.serverlog"
+    SERVER_LOG="./$i.$MODEL_PATH.server.log"
 
     if [ "$TEST_VALGRIND" -eq 1 ]; then
       LEAKCHECK_LOG="./$i.$MODEL_PATH.valgrind.log"
@@ -669,7 +677,7 @@ for i in $QUEUE_DELAY_TESTS ; do
     export TRITONSERVER_BACKLOG_DELAY_SCHEDULER=0
     export TRITONSERVER_DELAY_SCHEDULER=2
     SERVER_ARGS="--model-repository=$MODELDIR/$MODEL_PATH ${SERVER_ARGS_EXTRA}"
-    SERVER_LOG="./$i.$MODEL_PATH.serverlog"
+    SERVER_LOG="./$i.$MODEL_PATH.server.log"
 
     if [ "$TEST_VALGRIND" -eq 1 ]; then
         LEAKCHECK_LOG="./$i.$MODEL_PATH.valgrind.log"
@@ -716,6 +724,65 @@ for i in $QUEUE_DELAY_TESTS ; do
     fi
     set -e
 done
+
+# Test request timeout with sequence batcher
+# only run the test outside shared memory setting as
+# shared memory feature is irrelevant 
+if [ "$TEST_SYSTEM_SHARED_MEMORY" -ne 1 ] && [ "$TEST_CUDA_SHARED_MEMORY" -ne 1 ]; then
+    export NO_BATCHING=0
+    export MODEL_INSTANCES=1
+    export BATCHER_TYPE="FIXED"
+
+    TEST_CASE=SequenceBatcherRequestTimeoutTest
+    MODEL_PATH=request_timeout_models
+    mkdir -p ${MODEL_PATH}/custom_sequence_int32_timeout/1
+
+    SERVER_ARGS="--model-repository=$MODELDIR/$MODEL_PATH ${SERVER_ARGS_EXTRA}"
+    SERVER_LOG="./$TEST_CASE.$MODEL_PATH.server.log"
+
+    if [ "$TEST_VALGRIND" -eq 1 ]; then
+        LEAKCHECK_LOG="./$i.$MODEL_PATH.valgrind.log"
+        LEAKCHECK_ARGS="$LEAKCHECK_ARGS_BASE --log-file=$LEAKCHECK_LOG"
+        run_server_leakcheck
+    else
+        run_server
+    fi
+
+    if [ "$SERVER_PID" == "0" ]; then
+        echo -e "\n***\n*** Failed to start $SERVER\n***"
+        cat $SERVER_LOG
+        exit 1
+    fi
+
+    echo "Test: $TEST_CASE, repository $MODEL_PATH" >>$CLIENT_LOG
+
+    set +e
+    python3 $BATCHER_TEST $TEST_CASE >>$CLIENT_LOG 2>&1
+    if [ $? -ne 0 ]; then
+        echo -e "\n***\n*** Test $TEST_CASE Failed\n***" >>$CLIENT_LOG
+        echo -e "\n***\n*** Test $TEST_CASE Failed\n***"
+        RET=1
+    else
+        check_test_results $TEST_RESULT_FILE 2
+        if [ $? -ne 0 ]; then
+            cat $CLIENT_LOG
+            echo -e "\n***\n*** Test Result Verification Failed\n***"
+            RET=1
+        fi
+    fi
+    set -e
+
+    kill_server
+
+    set +e
+    if [ "$TEST_VALGRIND" -eq 1 ]; then
+        python3 ../common/check_valgrind_log.py -f $LEAKCHECK_LOG
+        if [ $? -ne 0 ]; then
+            RET=1
+        fi
+    fi
+    set -e
+fi
 
 if [ $RET -eq 0 ]; then
     echo -e "\n***\n*** Test Passed\n***"
